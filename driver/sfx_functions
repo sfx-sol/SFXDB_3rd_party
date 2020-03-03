@@ -1,0 +1,259 @@
+#!/bin/bash
+#------------------------------------------------------------------------------
+# Copyright (c) 2015-2019, ScaleFlux, Inc.
+#------------------------------------------------------------------------------
+
+function get_cmd_path()
+{
+    local __cmd=$1
+    local __path=$2
+    local __pathval=""
+    local __result=1
+
+    __pathval=`ls ./$__cmd 2>/dev/null`
+    if [ $? -ne 0 ]; then
+        __pathval=`which $__cmd 2>/dev/null`
+        if [ $? -ne 0 ]; then
+            __result=0
+        fi
+    fi
+    if [ $__result -eq 1 ]; then
+        if [ "$__path" ]; then
+            eval $__path="'$__pathval'"
+        else
+            echo "__pathval=$__pathval"
+        fi
+    fi
+    return $__result
+}
+
+function find_dev() {
+    # $1: the preceeding string of the devices, like /dev/sfd, /dev/sfdv
+    # $2: the number of devices need to check
+    # $3: all devices name. "/dev/sfd0n1 /dev/sfd3n1 /dev/sfd9n1". Cannot discrete
+    #     "all" for all devices.
+    # $4: timeout
+    # $5: the tailing string of the devices. Should be "n1"
+    # $6: display the devices' status. (0 means not display)
+    dev_str=$1
+    devcnt=$2
+    devices=$3
+    loopcnt=$4
+    ns=$5
+
+    if [[ "$devices" = "all" ]]; then
+        devices=${dev_str}0${ns}
+        for ((i=1; i < $devcnt; i++))
+        do
+            devices="$devices ${dev_str}${i}${ns}"
+            ###Debug
+            echo "All devices"
+            echo "$devices"
+        done
+        #Convert devices to an array
+        devices=($devices)
+    else
+        #Convert devices to an array
+        devices=($devices)
+        if [[ $devcnt -ne ${#devices[@]} ]]; then
+            echo "Warning: 'devcnt' is not equal to the number of 'devices'"
+            devcnt=${#devices[@]}
+        fi
+    fi
+
+    i=0
+    while [[ $i -lt $devcnt ]]
+    do
+        dev=${devices[i]}
+        echo "Probing ${dev_str}${i}${ns}..."
+        sn=$(cat /sys/block/${dev:5}/serial 2>/dev/null)
+        j=0
+        while [[ "$sn" = "" ]] && [[ $j -lt $loopcnt ]]
+        do
+            sleep 1
+            sn=$(cat /sys/block/${dev:5}/serial 2>/dev/null)
+            #echo "SN: $sn"
+            #echo "Waiting device ${dev_str}${i}${ns} for $j secs"
+            ((j++))
+        done
+        if [[ "$sn" = "" ]]
+        then
+            echo ""
+            #echo "Block driver failed to bring up device ${dev_str}${i}${ns}"
+        else
+            echo "Waiting for device ${dev_str}${i}${ns} took $j secs"
+        fi
+        ((i++))
+    done
+
+    dev_string=$(ls $dev_str* 2>/dev/null)
+    if [[ "$dev_string" = "" ]]
+    then
+        echo "Timeout on finding $dev_str*"
+        return 1
+    else
+        if [[ "$6" = "1" ]]
+        then
+            for i in $dev_string
+            do
+                # Debug output for Trac #247
+                echo "Showing permissions on the FTL device..."
+                date -Ins
+                stat $i
+                date -Ins
+            done
+        fi
+    fi
+    return 0
+}
+
+function find_device() {
+    dev=$1
+    devcnt=$2
+    loopcnt=$3
+    ns=$5
+    i=0
+    while [[ $i -lt $devcnt ]]
+    do
+        echo "Probing $dev${i}${ns}..."
+        dev_name=`ls $dev${i}${ns} 2>/dev/null`
+        j=0
+        while [[ $dev_name = "" ]] && [[ $j -lt $loopcnt ]]
+        do
+            sleep 1
+            dev_name=`ls $dev${i}${ns} 2>/dev/null`
+            ((j++))
+        done
+        if [[ $dev_name = "" ]]
+        then
+            echo "Block driver failed to bring up device $dev${i}${ns}"
+        else
+            echo "Waiting for device $dev${i}${ns} took $j secs"
+        fi
+        ((i++))
+    done
+    dev_string=`ls $dev* 2>/dev/null`
+    if [[ $dev_string = "" ]]
+    then
+        echo "Timeout on finding $dev*"
+        return 1
+    else
+        if [[ "$4" = "1" ]]
+        then
+            for i in $dev_string
+            do
+                # Debug output for Trac #247
+                echo "Showing permissions on the FTL device..."
+                date -Ins
+                stat $i
+                date -Ins
+            done
+        fi
+    fi
+    return 0
+}
+
+function find_bd_device() {
+    idx=$1
+    ns=$2
+    loopcnt=$3
+    echo "Probing /dev/sfd${idx}${ns}..."
+    dev_name=`ls /dev/sfd${idx}${ns} 2>/dev/null`
+    i=0
+    while [[ $dev_name = "" && $i -lt $loopcnt ]]
+    do
+        sleep 1
+        dev_name=`ls /dev/sfd${idx}${ns} 2>/dev/null`
+        ((i++))
+    done
+    if [[ $dev_name = "" ]]; then
+        echo "Timeout on finding /dev/sfd${idx}${ns}"
+        return 1
+    else
+        echo "Waiting for device /dev/sfd${idx}${ns} took $i secs"
+        return 0
+    fi
+}
+
+#------------------------------------------------------------------------------
+# wait-probe loop for both the block and css devices
+#------------------------------------------------------------------------------
+
+function wait_probe_dev() {
+    local devname=$1    # arg 1 is the device name
+    local maxsecs=$2    # arg 2 is the max seconds waited
+    local verbose=$3    # arg 3 turns on=1/off=0 verbose mode
+    local j=1;
+    echo "Probing $devname ...";
+    while [[ ! -e $devname ]] && [[ $j -lt $maxsecs ]]; do
+        sleep 1;
+        ((j++));
+    done;
+    if [[ $verbose -ne 0 ]]; then
+        if [[ ! -e $devname ]]; then
+            echo " Device $devname not found; possibly still being brought up, please check again later";
+        else
+            echo " Device $devname instantiated in $j seconds";
+        fi
+    fi;
+}
+
+function ping_devices() {
+    local maxsecs=$1     # arg 1 is the max seconds to probe
+    local dev_list=($(ls /dev/sfx[0-9]*))
+    local devname
+    local dev
+    for dev in ${dev_list[@]}; do
+        # wiat-probe for block device
+        devname=$(echo ${dev}n1/serial | sed -e 's#/dev/sfx#/sys/devices/virtual/block/sfd#')
+        wait_probe_dev $devname $maxsecs 1
+        # wiat-probe for css device
+        devname=$(echo ${dev} | sed -e 's/sfx/css/')
+        wait_probe_dev $devname $maxsecs 1
+    done;
+}
+
+#------------------------------------------------------------------------------
+# Check for supported Linux distro - Centos, Ubuntu, or Debian.
+#------------------------------------------------------------------------------
+function find_os() {
+    local __os=$1
+    local osval=""
+    local result=1
+
+    if [[ -f /etc/redhat-release ]]; then
+        distro="centos"
+        os_major=$(cat /etc/redhat-release | sed -e 's/[^0-9]*//' -e 's/\.[0-9]*.*$//' 2>/dev/null)
+        if [[ "$os_major" = "6" ]]; then
+            # current machine's OS is centos 6.x
+            osval=centos6
+        else
+            # treat all non-centos6 OSes as centos7
+            osval=centos7
+        fi
+    else
+        distro="ubuntu"
+        osval=ubuntu
+        cat /etc/*-release | grep -qi $distro
+        if [[ $? -ne 0 ]]; then
+            distro=debian
+            osval=debian
+            cat /etc/*-release | grep -qi $distro
+            if [[ $? -ne 0 ]]; then
+                result=0
+            fi
+        fi
+    fi
+    if [[ $result -eq 1 ]]; then
+        if [[ "$osval" ]]; then
+            eval $__os="'$osval'"
+        else
+            echo "osval=$osval"
+            result=0
+        fi
+    else
+        echo "find_os() failed, result = 0"
+    fi
+    return $result
+}
+
